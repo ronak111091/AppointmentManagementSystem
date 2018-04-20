@@ -5,8 +5,10 @@ import java.io.StringReader;
 import java.io.StringWriter;
 import java.sql.Date;
 import java.sql.Time;
+import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.List;
 
 import javax.xml.parsers.DocumentBuilder;
@@ -26,6 +28,8 @@ import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
+import com.sun.rowset.providers.RIXMLProvider;
+
 import appmgmtsys.data.DBSingleton;
 import appmgmtsys.util.AppointmentUtil;
 import components.data.Appointment;
@@ -42,18 +46,36 @@ public class BusinessLayer {
 	private DBSingleton dbSingleton;
 	
 	private SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd");
+	private SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss");
 	
 	private static final String APPOINTMENT_ERROR = "ERROR:Appointment is not available"; 
+	
+	private java.util.Date APPOINTMENT_START_TIME;
+	private java.util.Date APPOINTMENT_END_TIME;
 	
 	public BusinessLayer() {
 		super();
 		initialize();
+		initializeAppointmentStartAndEndTime();
 	}
 
 	public String initialize() {
 		dbSingleton = DBSingleton.getInstance();
 		dbSingleton.db.initialLoad("LAMS");
 		return "database initialized!";
+	}
+	
+	private void initializeAppointmentStartAndEndTime() {
+		String appointmentStartTimeStr = "07:59:59";
+		String appointmentEndTimeStr = "17:00:00";
+		
+		try {
+			APPOINTMENT_START_TIME = timeFormat.parse(appointmentStartTimeStr);
+			APPOINTMENT_END_TIME = timeFormat.parse(appointmentEndTimeStr);
+		} catch (ParseException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
 	}
 	
 	public String getAllAppointments() throws Exception {
@@ -92,7 +114,7 @@ public class BusinessLayer {
 		if (dateNodeList.item(0) == null || timeNodeList.item(0) == null || patientIdNodeList.item(0) == null
 				|| physicianIdNodeList.item(0) == null || pscIdNodeList.item(0) == null
 				|| phlebotomistIdNodeList.item(0) == null || labTestsNodeList.item(0) == null) {
-			return APPOINTMENT_ERROR;
+			return createXMLErrorString(null);
 		}
 	    
 	    String dateStr = dateNodeList.item(0).getTextContent();
@@ -118,7 +140,7 @@ public class BusinessLayer {
 		    		}
 		    	}
 	    	}else {
-	    		return APPOINTMENT_ERROR;
+	    		return createXMLErrorString(null);
 	    	}
 	    }
     	
@@ -140,13 +162,17 @@ public class BusinessLayer {
 //			return APPOINTMENT_ERROR;
 //		}
     	
-    	if ((date = AppointmentUtil.getDateObj(dateStr)) == null || (time = AppointmentUtil.getTimeObj(timeStr)) == null
+    	if ((date = AppointmentUtil.getDateObj(dateStr)) == null || (time = AppointmentUtil.getTimeObj(timeStr)) == null || !(isAppointmentTimeBetween8AmTo5Pm(time))
 				|| (patient = getPatient(patientId,physicianId)) == null || (physician = getPhysician(physicianId)) == null
 				|| (psc = getPSC(pscId)) == null || (phlebotomist = getPhlebotomist(phlebotomistId)) == null
 				|| (appointmentLabTests = getAppointmentLabTests(id+"", testIds, dxCodes)) == null) {
-			return APPOINTMENT_ERROR;
+    		return createXMLErrorString(null);
 		}
-		
+    	
+    	if(checkAppointmentConflict(date,time,phlebotomist.getId(), psc.getId())) {
+    		return createXMLErrorString("Conflicting appointment");
+    	}
+    	
 		Appointment newAppointment = new Appointment(id+"",date,time);
 		newAppointment.setAppointmentLabTestCollection(appointmentLabTests);
 		newAppointment.setPatientid(patient);
@@ -158,10 +184,10 @@ public class BusinessLayer {
 				return getAppointment(id+"");
 			} catch (Exception e) {
 				// TODO Auto-generated catch block
-				return "ERROR: error while fetching data for new appointment";
+				return createXMLErrorString("ERROR: error while fetching data for new appointment");
 			}
 		}else {
-			return "ERROR: error while saving data";
+			return createXMLErrorString("ERROR: error while saving data");
 		}
 	}
 
@@ -242,29 +268,57 @@ public class BusinessLayer {
 		}
 	}
 	
-	private String createXMLErrorString(String errorMsg) throws ParserConfigurationException, TransformerException {
-		errorMsg = errorMsg!=null?errorMsg:APPOINTMENT_ERROR;
-		DocumentBuilderFactory docFactory = DocumentBuilderFactory.newInstance();
-	    DocumentBuilder docBuilder = docFactory.newDocumentBuilder();
-	    
-	    Document doc = docBuilder.newDocument();
-	    Element rootElement = doc.createElement("AppointmentList");
-	    doc.appendChild(rootElement);
-	    
-	    Element error = doc.createElement("error");
-	    error.appendChild(doc.createTextNode(errorMsg));
-	    rootElement.appendChild(error);
-	    
-	    TransformerFactory transformerFactory = TransformerFactory.newInstance();
-	    Transformer transformer = transformerFactory.newTransformer();
-	    transformer.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
-		transformer.setOutputProperty(OutputKeys.INDENT, "yes");
-		transformer.setOutputProperty(OutputKeys.STANDALONE, "no");
-	    DOMSource source = new DOMSource(doc);
-	    StringWriter writer = new StringWriter();
-		StreamResult result = new StreamResult(writer);
-		transformer.transform(source, result);
-		return writer.toString();
+	private String createXMLErrorString(String errorMsg) {
+		errorMsg=errorMsg!=null?errorMsg:APPOINTMENT_ERROR;
+		StringBuilder output = new StringBuilder();
+		output.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\r\n" + 
+				"<AppointmentList>\r\n" + 
+				"<error>");
+		output.append(errorMsg);
+		output.append("</error>\r\n" + 
+				"</AppointmentList>");
+		return output.toString();
+	}
+	
+	private boolean isAppointmentTimeBetween8AmTo5Pm(Time appointmentTime) {
+		if(appointmentTime.after(APPOINTMENT_START_TIME) && appointmentTime.before(APPOINTMENT_END_TIME)) {
+			return true;
+		}
+		return false;
+	}
+	
+	public boolean checkAppointmentConflict(Date date, Time time, String phlebid, String pscId) {
+		Appointment a = null;
+		String timeStr = time.toLocalTime().toString();
+		String fifteenMinBefore = time.toLocalTime().minusMinutes(15).toString(); 
+		String fifteenMinAfter = time.toLocalTime().plusMinutes(15).toString();
+		List<Object> appointments = dbSingleton.db.getData("Appointment", "appttime>'"+fifteenMinBefore+"' and appttime < '"+fifteenMinAfter+"' and apptdate='"+dateFormat.format(date)+"' "
+				+ "and phlebid='"+phlebid+"'");
+
+		if(appointments.size()>0) {
+			return true;
+		}
+		
+		String fortyFiveMinutesBefore = time.toLocalTime().minusMinutes(45).toString();
+		String fortyFiveMinutesAfter = time.toLocalTime().plusMinutes(45).toString();
+		appointments = dbSingleton.db.getData("Appointment", "appttime>'"+fortyFiveMinutesBefore+"' and appttime <= '"+timeStr+"' and apptdate='"+dateFormat.format(date)+"' "
+				+ "and phlebid='"+phlebid+"' order by appttime desc");
+		if(appointments.size()>0) {
+			a = (Appointment) appointments.get(0);
+			if(!pscId.equals(a.getPscid().getId())) {
+				return true;
+			}
+		}
+		
+		appointments = dbSingleton.db.getData("Appointment", "appttime >= '"+timeStr+"'and appttime<'"+fortyFiveMinutesAfter+"' and apptdate='"+dateFormat.format(date)+"' "
+				+ "and phlebid='"+phlebid+"' order by appttime asc");
+		if(appointments.size()>0) {
+			a = (Appointment) appointments.get(0);
+			if(!pscId.equals(a.getPscid().getId())) {
+				return true;
+			}
+		}
+		return false;
 	}
 	
 	private String convertAppointmentToXMLString(List<Object> appointments) throws ParserConfigurationException, TransformerException {
