@@ -8,7 +8,6 @@ import java.sql.Time;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Calendar;
 import java.util.List;
 
 import javax.xml.parsers.DocumentBuilder;
@@ -26,9 +25,6 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
-import org.xml.sax.SAXException;
-
-import com.sun.rowset.providers.RIXMLProvider;
 
 import appmgmtsys.data.DBSingleton;
 import appmgmtsys.util.AppointmentUtil;
@@ -41,7 +37,7 @@ import components.data.Patient;
 import components.data.Phlebotomist;
 import components.data.Physician;
 
-public class BusinessLayer {
+public class LAMBusinessLayer {
 	
 	private DBSingleton dbSingleton;
 	
@@ -53,7 +49,7 @@ public class BusinessLayer {
 	private java.util.Date APPOINTMENT_START_TIME;
 	private java.util.Date APPOINTMENT_END_TIME;
 	
-	public BusinessLayer() {
+	public LAMBusinessLayer() {
 		super();
 		initialize();
 		initializeAppointmentStartAndEndTime();
@@ -93,11 +89,11 @@ public class BusinessLayer {
 		if(!appointments.isEmpty()) {
 			return convertAppointmentToXMLString(appointments);
 		}else {
-			return "ERROR: No appointment found for "+appointmentNo;
+			return createXMLErrorString("ERROR: No appointment found for "+appointmentNo);
 		}
 	}
 	
-	public String addAppointment(String xml) throws ParserConfigurationException, SAXException, IOException {
+	public String addAppointment(String xml) throws Exception {
 	    DocumentBuilder docBuilder = DocumentBuilderFactory.newInstance().newDocumentBuilder();
 	    InputSource is = new InputSource();
 	    is.setCharacterStream(new StringReader(xml));
@@ -111,6 +107,7 @@ public class BusinessLayer {
 	    NodeList phlebotomistIdNodeList = doc.getElementsByTagName("phlebotomistId");
 	    NodeList labTestsNodeList = doc.getElementsByTagName("labTests");
 	    
+	    //checking if the input has all the required tags
 		if (dateNodeList.item(0) == null || timeNodeList.item(0) == null || patientIdNodeList.item(0) == null
 				|| physicianIdNodeList.item(0) == null || pscIdNodeList.item(0) == null
 				|| phlebotomistIdNodeList.item(0) == null || labTestsNodeList.item(0) == null) {
@@ -153,15 +150,7 @@ public class BusinessLayer {
     	Phlebotomist phlebotomist = null;
     	List<AppointmentLabTest> appointmentLabTests = null;
     	
-//		if ((date = AppointmentUtil.getDateObj(dateStr)) != null && (time = AppointmentUtil.getTimeObj(timeStr)) != null
-//				&& (patient = getPatient(patientId,physicianId)) != null && (physician = getPhysician(physicianId)) != null
-//				&& (psc = getPSC(pscId)) != null && (phlebotomist = getPhlebotomist(phlebotomistId)) != null
-//				&& (appointmentLabTests = getAppointmentLabTests(id+"", testIds, dxCodes)) != null) {
-//
-//		} else {
-//			return APPOINTMENT_ERROR;
-//		}
-    	
+    	//validating input ids from database
     	if ((date = AppointmentUtil.getDateObj(dateStr)) == null || (time = AppointmentUtil.getTimeObj(timeStr)) == null || !(isAppointmentTimeBetween8AmTo5Pm(time))
 				|| (patient = getPatient(patientId,physicianId)) == null || (physician = getPhysician(physicianId)) == null
 				|| (psc = getPSC(pscId)) == null || (phlebotomist = getPhlebotomist(phlebotomistId)) == null
@@ -169,6 +158,12 @@ public class BusinessLayer {
     		return createXMLErrorString(null);
 		}
     	
+    	//checking duplicate appointments
+    	if (checkDuplicateAppointment(patientId, phlebotomistId, pscId, date, time)) {
+    		return createXMLErrorString("Duplicate appointment");
+		}
+    	
+    	//checking conflicting appointments
     	if(checkAppointmentConflict(date,time,phlebotomist.getId(), psc.getId())) {
     		return createXMLErrorString("Conflicting appointment");
     	}
@@ -220,11 +215,6 @@ public class BusinessLayer {
 
 	private Patient getPatient(String id, String physicianId) {
 		List<Object> patients = dbSingleton.db.getData("Patient", "id='"+id+"'");
-//		if(patients.size()>0) {
-//			return (Patient) patients.get(0);
-//		}else {
-//			return null;
-//		}
 		if(patients.size()>0) {
 			Patient patient = (Patient) patients.get(0);
 			if(physicianId.equals(patient.getPhysician().getId())) {
@@ -268,15 +258,12 @@ public class BusinessLayer {
 		}
 	}
 	
-	private String createXMLErrorString(String errorMsg) {
+	public String createXMLErrorString(String errorMsg) {
 		errorMsg=errorMsg!=null?errorMsg:APPOINTMENT_ERROR;
 		StringBuilder output = new StringBuilder();
-		output.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\r\n" + 
-				"<AppointmentList>\r\n" + 
-				"<error>");
+		output.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?><AppointmentList><error>");
 		output.append(errorMsg);
-		output.append("</error>\r\n" + 
-				"</AppointmentList>");
+		output.append("</error></AppointmentList>");
 		return output.toString();
 	}
 	
@@ -287,7 +274,7 @@ public class BusinessLayer {
 		return false;
 	}
 	
-	public boolean checkAppointmentConflict(Date date, Time time, String phlebid, String pscId) {
+	private boolean checkAppointmentConflict(Date date, Time time, String phlebid, String pscId) {
 		Appointment a = null;
 		String timeStr = time.toLocalTime().toString();
 		String fifteenMinBefore = time.toLocalTime().minusMinutes(15).toString(); 
@@ -321,7 +308,7 @@ public class BusinessLayer {
 		return false;
 	}
 	
-	private String convertAppointmentToXMLString(List<Object> appointments) throws ParserConfigurationException, TransformerException {
+	private String convertAppointmentToXMLString(List<Object> appointments) throws ParserConfigurationException, TransformerException, IOException {
 		DocumentBuilderFactory docFactory = DocumentBuilderFactory.newInstance();
 	    DocumentBuilder docBuilder = docFactory.newDocumentBuilder();
 	    
@@ -389,22 +376,34 @@ public class BusinessLayer {
 	    TransformerFactory transformerFactory = TransformerFactory.newInstance();
 	    Transformer transformer = transformerFactory.newTransformer();
 	    transformer.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
-		transformer.setOutputProperty(OutputKeys.INDENT, "yes");
+//		transformer.setOutputProperty(OutputKeys.INDENT, "yes");
 		transformer.setOutputProperty(OutputKeys.STANDALONE, "no");
+//		transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes");
 	    DOMSource source = new DOMSource(doc);
 	    StringWriter writer = new StringWriter();
 		StreamResult result = new StreamResult(writer);
 		transformer.transform(source, result);
-		return writer.toString();
+		String output = writer.toString();
+		return output;
 	}
 	
-	public int fetchLastAppointmentId() {
+	private int fetchLastAppointmentId() {
 		List<Object> appointments = dbSingleton.db.getData("Appointment", "id=(SELECT max(id) from Appointment)");
 		if(appointments.size()>0) {
 			Appointment app = (Appointment) appointments.get(0);
 			return Integer.parseInt(app.getId());
 		}
 		return 0;
+	}
+	
+	private boolean checkDuplicateAppointment(String patientId, String phlebId, String pscId, Date date, Time time) {
+		List<Object> appointments = dbSingleton.db.getData("Appointment", "patientid='"+patientId+"' and apptdate='"
+				+dateFormat.format(date)+"' and appttime='"+time.toLocalTime().toString()+"' and phlebid='"+phlebId+"' and"
+					+" pscid='"+pscId+"'");
+		if(appointments.size()>0) {
+			return true;
+		}
+		return false;
 	}
 	
 }
