@@ -267,6 +267,15 @@ public class LAMBusinessLayer {
 		return output.toString();
 	}
 	
+	public String createXMLInitializeString(String uri) {
+		StringBuilder output = new StringBuilder();
+		output.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?><AppointmentList><intro>")
+				.append("Welcome to the LAMS Appointment Service").append("</intro><wadl>").append(uri)
+				.append("application.wadl")
+				.append("</wadl></AppointmentList>");
+		return output.toString();
+	}
+	
 	private boolean isAppointmentTimeBetween8AmTo5Pm(Time appointmentTime) {
 		if(appointmentTime.after(APPOINTMENT_START_TIME) && appointmentTime.before(APPOINTMENT_END_TIME)) {
 			return true;
